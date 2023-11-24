@@ -241,8 +241,7 @@ impl Emu {
     // RLCA
     fn op_07(&mut self) {
         let carry: bool = (self.a & 0x80) != 0;
-        self.a <<= 1;
-        self.a = self.a.wrapping_add(carry as u8);
+        self.a.rotate_left(1);
         self.set_flags(false, false, false, carry);
     }
 
@@ -297,6 +296,19 @@ impl Emu {
 
     // RRCA
     fn op_0F(&mut self) {
+        let carry: bool = (self.a & 0x01) != 0;
+        self.a.rotate_right(1);
+        self.set_flags(false, false, false, carry);
+    }
+
+    // STOP
+    fn op_10(&mut self) {
+        // TODO
+    }
+
+    fn op_11(&mut self) {
+        let lower = self.fetch();
+        let higher = self.fetch();
         
     }
 
