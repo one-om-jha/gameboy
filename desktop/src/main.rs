@@ -7,13 +7,14 @@ use sdl2::render::Canvas;
 use sdl2::video::Window;
 use std::env;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 
-const SCALE: u32 = 15;
+const SCALE: u32 = 2;
 const WINDOW_WIDTH: u32 = (SCREEN_WIDTH as u32) * SCALE;
 const WINDOW_HEIGHT: u32 = (SCREEN_HEIGHT as u32) * SCALE;
 
-const TICKS_PER_FRAME: usize = 10;
+const TICKS_PER_FRAME: usize = 70224;
+// const TICKS_PER_FRAME: usize = 100;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
@@ -39,11 +40,17 @@ fn main() {
     let mut event_pump = sdl_context.event_pump().unwrap();
 
     let mut gb = Emu::new();
+    
+    let mut log = File::create("log.txt").expect("Unable to create log");
+    let mut mem = File::create("mem.txt").expect("Unable to create mem");
 
     let mut rom = File::open(&args[1]).expect("Unable to open file.");
     let mut buffer = Vec::new();
     rom.read_to_end(&mut buffer).unwrap();
     gb.load(&buffer);
+
+    log.write_all(gb.print_data().as_bytes()).expect("Unable to be written");
+    mem.write_all(gb.print_memory().as_bytes()).expect("Unable to be written");
 
     'gameplay: loop {
         for evt in event_pump.poll_iter() {
@@ -75,6 +82,7 @@ fn main() {
 
         for _ in 0..TICKS_PER_FRAME {
             gb.tick();
+            log.write_all(gb.print_data().as_bytes()).expect("Unable to be written");
         }
         gb.tick_timers();
         draw_screen(&gb, &mut canvas);
@@ -82,43 +90,39 @@ fn main() {
 }
 
 fn draw_screen(emu: &Emu, canvas: &mut Canvas<Window>) {
-    // Clear Canvas as black
-    canvas.set_draw_color(Color::RGB(0, 0, 0));
+    canvas.set_draw_color(Color::RGB(255, 255, 255));
     canvas.clear();
 
     let screen_buf = emu.get_display();
-
-    // canvas.set_draw_color(Color::RGB(255, 255, 255));
-    // for (i, pixel) in screen_buf.iter().enumerate() {
-    //     if *pixel {
-    //         let x = (i % SCREEN_WIDTH) as u32;
-    //         let y = (i / SCREEN_WIDTH) as u32;
-
-    //         let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
-    //         canvas.fill_rect(rect).unwrap();
-    //     }
-    // }
     for (i, pixel) in screen_buf.iter().enumerate() {
         let (r,g,b) = *pixel;
         let x = (i % SCREEN_WIDTH) as u32;
         let y = (i / SCREEN_WIDTH) as u32;
         canvas.set_draw_color(Color::RGB(r,g,b));
+        if (r,g,b) != (255,255,255) {
+            // println!("{} {} {} {} {}", r, g, b, x, y)
+        };
         let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
-        canvas.fill_rect(rect).unwrap();
+
+        if let Err(e) = canvas.fill_rect(rect) {
+            eprintln!("Error drawing pixel: {}", e);
+            break;
+        }
     }
     canvas.present();
 }
 
 fn key2btn(key: Keycode) -> Option<usize> {
     match key {
-        Keycode::W => Some(0),
-        Keycode::D => Some(1),
-        Keycode::S => Some(2),
-        Keycode::A => Some(3),
-        Keycode::J => Some(4),
-        Keycode::K => Some(5),
-        Keycode::I => Some(6),
-        Keycode::O => Some(7),
+        Keycode::S => Some(0),
+        Keycode::W => Some(1),
+        Keycode::A => Some(2),
+        Keycode::D => Some(3),
+        Keycode::I => Some(4),
+        Keycode::O => Some(5),
+        Keycode::J => Some(6),
+        Keycode::K => Some(7),
+        Keycode::Return => Some(8),
         _ => None,
     }
 }

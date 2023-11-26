@@ -1,7 +1,7 @@
 pub const SCREEN_WIDTH: usize = 160;
 pub const SCREEN_HEIGHT: usize = 144;
 
-const MEM_SIZE: usize = 65536;
+const MEM_SIZE: usize = 65536 * 2;
 
 const START_ADDR: u16 = 0x0100;
 
@@ -10,6 +10,27 @@ const SUB_FLAG: u8 = 0b0100_0000;
 const HALF_FLAG: u8 = 0b0010_0000;
 const CARRY_FLAG: u8 = 0b0001_0000;
 
+const INTERRUPT_ENABLE: usize = 0xFFFF; // Interrupt Enable Register
+const INTERRUPT_FLAG: usize = 0xFF0F; // Interrupt Request (Flag) Register
+
+// Each bit in the interrupt registers corresponds to a different interrupt:
+const VBLANK: u8 = 1 << 0; // V-Blank  Interrupt Request
+const LCD_STAT: u8 = 1 << 1; // LCD STAT Interrupt Request
+const TIMER: u8 = 1 << 2; // Timer    Interrupt Request
+const SERIAL: u8 = 1 << 3; // Serial   Interrupt Request
+const JOYPAD: u8 = 1 << 4; // Joypad   Interrupt Request
+
+const VBLANK_ISR: u16 = 0x0040; // V-Blank interrupt vector address
+const LCD_STAT_ISR: u16 = 0x0048; // LCD STAT interrupt vector address
+const TIMER_ISR: u16 = 0x0050; // Timer interrupt vector address
+const SERIAL_ISR: u16 = 0x0058; // Serial interrupt vector address
+const JOYPAD_ISR: u16 = 0x0060; // Joypad interrupt vector address
+
+const DMA_REGISTER: u16 = 0xFF46;
+const OAM_START: u16 = 0xFE00;
+const OAM_SIZE: usize = 160; // 40 sprites * 4 bytes each
+
+#[derive(Debug)]
 enum PpuState {
     GpuModeHblank = 0,
     GpuModeVblank = 1,
@@ -41,17 +62,17 @@ impl Emu {
     pub fn new() -> Self {
         let new_emu = Self {
             mem: [0; MEM_SIZE],
-            screen: [(0, 0, 0); SCREEN_WIDTH * SCREEN_HEIGHT],
+            screen: [(255, 255, 255); SCREEN_WIDTH * SCREEN_HEIGHT],
             sp: 0xFFFE,
-            pc: START_ADDR,
-            a: 0,
-            b: 0,
-            c: 0,
-            d: 0,
-            e: 0,
-            f: 0,
-            h: 0,
-            l: 0,
+            pc: 0x0100,
+            a: 0x01,
+            b: 0x00,
+            c: 0x13,
+            d: 0x00,
+            e: 0xD8,
+            f: 0xB0,
+            h: 0x01,
+            l: 0x4D,
             is_halted: false,
             interrupts_enabled: false,
             gpu_state: PpuState::GpuModeHblank,
@@ -103,34 +124,34 @@ impl Emu {
         let higher: u8 = (val >> 8) as u8;
         let lower: u8 = val as u8;
         self.a = higher;
-        self.f = lower;
+        self.f = lower & 0xF0;
     }
 
     fn set_zero(&mut self, z: bool) {
         match z {
             true => self.f |= ZERO_FLAG,
-            false => self.f &= ZERO_FLAG,
+            false => self.f &= !ZERO_FLAG,
         }
     }
 
     fn set_sub(&mut self, s: bool) {
         match s {
             true => self.f |= SUB_FLAG,
-            false => self.f &= SUB_FLAG,
+            false => self.f &= !SUB_FLAG,
         }
     }
 
     fn set_half(&mut self, h: bool) {
         match h {
             true => self.f |= HALF_FLAG,
-            false => self.f &= HALF_FLAG,
+            false => self.f &= !HALF_FLAG,
         }
     }
 
     fn set_carry(&mut self, c: bool) {
         match c {
             true => self.f |= CARRY_FLAG,
-            false => self.f &= CARRY_FLAG,
+            false => self.f &= !CARRY_FLAG,
         }
     }
 
@@ -174,10 +195,90 @@ impl Emu {
         let op = self.fetch();
         let cycles = self.execute(op);
         self.ppu(cycles);
+
+        // Check if a DMA transfer should start
+        let dma_value = self.mem[DMA_REGISTER as usize];
+        if dma_value != 0 {
+            println!("{:04X}", self.pc);
+            // Calculate the source address from the DMA register value
+            let src_start = (dma_value as u16) << 8;
+
+            // Perform the DMA transfer, copying byte by byte
+            for i in 0..OAM_SIZE {
+                let byte = self.mem[src_start as usize + i];
+                self.mem[OAM_START as usize + i] = byte;
+            }
+
+            // Clear the DMA start condition by writing 0 to the DMA register
+            // to indicate that the DMA transfer has completed
+            self.mem[DMA_REGISTER as usize] = 0;
+        }
+
+        if self.interrupts_enabled {
+            self.handle_interrupts();
+        }
+    }
+
+    fn handle_interrupts(&mut self) {
+        let enabled = self.mem[INTERRUPT_ENABLE];
+        let requested = self.mem[INTERRUPT_FLAG];
+        let fired = enabled & requested;
+
+        if fired != 0 {
+            self.interrupts_enabled = false;
+            self.push_stack(self.pc);
+
+            if fired & VBLANK != 0 {
+                self.mem[INTERRUPT_FLAG] &= !VBLANK;
+                self.pc = VBLANK_ISR;
+            } else if fired & LCD_STAT != 0 {
+                self.mem[INTERRUPT_FLAG] &= !LCD_STAT;
+                self.pc = LCD_STAT_ISR;
+            } else if fired & TIMER != 0 {
+                self.mem[INTERRUPT_FLAG] &= !TIMER;
+                self.pc = TIMER_ISR;
+            } else if fired & SERIAL != 0 {
+                self.mem[INTERRUPT_FLAG] &= !SERIAL;
+                self.pc = SERIAL_ISR;
+            } else if fired & JOYPAD != 0 {
+                self.mem[INTERRUPT_FLAG] &= !JOYPAD;
+                self.pc = JOYPAD_ISR;
+            }
+
+            // Handling the interrupt takes some cycles, adjust your cycle count accordingly
+            // self.cycles -= 5;
+        }
+    }
+
+    fn push_stack(&mut self, value: u16) {
+        // Gameboy stack is full descending, which means it grows down in memory
+        self.sp = self.sp.wrapping_sub(2);
+        self.mem[(self.sp + 1) as usize] = (value >> 8) as u8; // Push high byte
+        self.mem[self.sp as usize] = (value & 0xFF) as u8; // Push low byte
     }
 
     pub fn tick_timers(&mut self) {
         // TODO
+    }
+
+    pub fn print_data(&mut self) -> String {
+        format!(
+            "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:02X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}\n",
+            self.a,
+            self.f,
+            self.b,
+            self.c,
+            self.d,
+            self.e,
+            self.h,
+            self.l,
+            self.sp,
+            self.pc,
+            self.mem[self.pc as usize],
+            self.mem[self.pc as usize + 1],
+            self.mem[self.pc as usize + 2],
+            self.mem[self.pc as usize + 3]
+        )
     }
 
     pub fn get_display(&self) -> &[(u8, u8, u8)] {
@@ -203,49 +304,46 @@ impl Emu {
     pub fn ppu(&mut self, cycles: u16) {
         self.cycles += cycles;
 
+        // println!("{} {} {:?}", self.cycles, self.scanline, self.gpu_state);
+
         match self.gpu_state {
             PpuState::GpuModeHblank => {
                 if self.cycles >= 204 {
-                    self.cycles += 1;
+                    self.cycles -= 204;
+                    self.scanline += 1;
+                    self.mem[0xFF44] = self.scanline; // Update the scanline counter
 
-                    if self.scanline == 143 {
-                        if self.interrupts_enabled & self.geti_vblank() {
-                            self.mem[0xFF0F as usize] |= 0b0000_0001;
-                        }
-
+                    if self.scanline == 144 {
+                        // Transition to VBlank
+                        self.mem[0xFF0F] |= 0b0000_0001; // Request VBlank interrupt
                         self.gpu_state = PpuState::GpuModeVblank;
                     } else {
                         self.gpu_state = PpuState::GpuModeOam;
-                        self.cycles -= 204;
                     }
                 }
             }
             PpuState::GpuModeVblank => {
                 if self.cycles >= 456 {
+                    self.cycles -= 456;
                     self.scanline += 1;
-
                     if self.scanline > 153 {
                         self.scanline = 0;
                         self.gpu_state = PpuState::GpuModeOam;
                     }
-
-                    self.cycles -= 456;
+                    self.mem[0xFF44] = self.scanline; // Update the scanline counter
                 }
             }
             PpuState::GpuModeOam => {
                 if self.cycles >= 80 {
-                    self.gpu_state = PpuState::GpuModeVram;
-
                     self.cycles -= 80;
+                    self.gpu_state = PpuState::GpuModeVram;
                 }
             }
             PpuState::GpuModeVram => {
                 if self.cycles >= 172 {
-                    self.gpu_state = PpuState::GpuModeHblank;
-
-                    self.render_scanline();
-
                     self.cycles -= 172;
+                    self.gpu_state = PpuState::GpuModeHblank;
+                    self.render_scanline();
                 }
             }
         }
@@ -263,22 +361,25 @@ impl Emu {
             0x8800
         };
 
-        let map_offset =
-            bg_map_offset + ((self.scanline as u16 + self.scrolly() as u16) / 8) * 32;
+        let map_offset = bg_map_offset + ((self.scanline as u16 + self.scrolly() as u16) / 8) * 32;
 
         let line_offset = self.scrollx() as u16 / 8;
 
-        let y = (self.scanline + self.scrolly()) & 7;
+        let y = (self.scanline.wrapping_add(self.scrolly())) & 7;
 
-        let pixel_offset = self.scanline * 160;
+        let pixel_offset = self.scanline as u16 * 160;
 
         // background
         for tile_x in 0..20 {
             let tile_index = self.mem[(map_offset + line_offset + tile_x) as usize];
 
-            let tile_addr = match self.get_lcd_control() & (1 << 4) {
-                0 => tile_data_base + (((tile_index as i8 as i16) + 128) * 16) as usize,
-                _ => tile_data_base + (tile_index as u16 * 16) as usize,
+            let tile_addr = if self.get_lcd_control() & (1 << 4) == 0 {
+                // Signed tile index (0x8800 - 0x97FF)
+                let signed_index = tile_index as i8 as i16;
+                tile_data_base + ((signed_index + 128) * 16) as usize
+            } else {
+                // Unsigned tile index (0x8000 - 0x8FFF)
+                tile_data_base + (tile_index as u16 * 16) as usize
             };
 
             let tile_data_lower = self.mem[tile_addr + 2 * y as usize];
@@ -289,11 +390,13 @@ impl Emu {
                 let lower = tile_data_lower & (1 << (7 - tile_pixel)) != 0;
 
                 let color: (u8, u8, u8) = match (higher, lower) {
-                    (false, false) => (0, 0, 0),
-                    (false, true) => (96, 96, 96),
-                    (true, false) => (148, 148, 148),
-                    (true, true) => (255, 255, 255),
+                    (false, false) => (255, 255, 255),
+                    (false, true) => (148, 148, 148),
+                    (true, false) => (96, 96, 96),
+                    (true, true) => (0, 0, 0),
                 };
+
+                // println!("{} {} {}", color.0, color.1, color.2);
 
                 let x = (tile_x * 8 + tile_pixel) as usize;
                 self.screen[pixel_offset as usize + x] = color;
@@ -330,7 +433,7 @@ impl Emu {
                 let sprite_tile_addr = 0x8000 + (tile_index as usize * 16) + (tile_line % 8 * 2);
 
                 let tile_data_lower = self.mem[sprite_tile_addr as usize];
-                let tile_data_higher = self.mem[sprite_tile_addr as usize];
+                let tile_data_higher = self.mem[sprite_tile_addr as usize + 1];
 
                 for sprite_pixel in 0..8 {
                     let tile_pixel = match x_flip {
@@ -341,10 +444,10 @@ impl Emu {
                     let lower = tile_data_lower & (1 << (7 - tile_pixel)) != 0;
 
                     let color: (u8, u8, u8) = match (higher, lower) {
-                        (false, false) => (0, 0, 0),
-                        (false, true) => (96, 96, 96),
-                        (true, false) => (148, 148, 148),
-                        (true, true) => (255, 255, 255),
+                        (false, false) => (255, 255, 255),
+                        (false, true) => (148, 148, 148),
+                        (true, false) => (96, 96, 96),
+                        (true, true) => (0, 0, 0),
                     };
 
                     let screen_x = sprite_x as usize + tile_pixel;
@@ -363,23 +466,27 @@ impl Emu {
     }
 
     pub fn keypress(&mut self, idx: usize, pressed: bool) {
+        if idx == 8 {
+            println!("{}", self.print_memory());
+        }
+
         let dir = (self.mem[0xFF00] & 0b0010_0000) == 0; // Select direction keys
         let action = (self.mem[0xFF00] & 0b0001_0000) == 0; // Select action buttons
 
         if dir {
             match idx {
-                0 => self.update_key_state(2, pressed), // Down
-                1 => self.update_key_state(1, pressed), // Up
-                2 => self.update_key_state(3, pressed), // Left
+                0 => self.update_key_state(3, pressed), // Down
+                1 => self.update_key_state(2, pressed), // Up
+                2 => self.update_key_state(1, pressed), // Left
                 3 => self.update_key_state(0, pressed), // Right
                 _ => {}
             }
         } else if action {
             match idx {
-                0 => self.update_key_state(6, pressed), // Start
-                1 => self.update_key_state(7, pressed), // Select
-                2 => self.update_key_state(5, pressed), // B
-                3 => self.update_key_state(4, pressed), // A
+                4 => self.update_key_state(3, pressed), // Start
+                5 => self.update_key_state(2, pressed), // Select
+                6 => self.update_key_state(1, pressed), // B
+                7 => self.update_key_state(0, pressed), // A
                 _ => {}
             }
         }
@@ -394,14 +501,23 @@ impl Emu {
     }
 
     pub fn load(&mut self, data: &[u8]) {
-        let start = START_ADDR as usize;
-        let end = (START_ADDR as usize) + data.len();
-        self.mem[start..end].copy_from_slice(data);
+        self.mem[..data.len()].copy_from_slice(&data);
+    }
+
+    pub fn print_memory(&mut self) -> String {
+        let mut mem_str = String::new();
+        for i in 0x8800..MEM_SIZE {
+            mem_str.push_str(&format!("{:02X} ", self.mem[i]));
+            if i % 16 == 15 {
+                mem_str.push_str("\n");
+            }
+        }
+        mem_str
     }
 
     fn fetch(&mut self) -> u8 {
         let opcode = self.mem[self.pc as usize];
-        self.pc += 1;
+        self.pc = self.pc.wrapping_add(1);
         opcode
     }
 
@@ -442,8 +558,8 @@ impl Emu {
             0x1F => self.rra(),
             0x20 => self.jr_nz(),
             0x21 => self.ld_hlnn(),
-            0x22 => self.ld_hln(),
-            0x23 => self.inc_hl(),
+            0x22 => self.ldi_hla(),
+            0x23 => self.inc_hlr(),
             0x24 => self.inc_h(),
             0x25 => self.dec_h(),
             0x26 => self.ld_hn(),
@@ -451,17 +567,17 @@ impl Emu {
             0x28 => self.jr_z(),
             0x29 => self.add_hlhl(),
             0x2A => self.ldi_ahl(),
-            0x2B => self.dec_hl(),
+            0x2B => self.dec_hlr(),
             0x2C => self.inc_l(),
             0x2D => self.dec_l(),
             0x2E => self.ld_ln(),
             0x2F => self.cpl(),
             0x30 => self.jr_nc(),
             0x31 => self.ld_spnn(),
-            0x32 => self.ld_hlnn(),
+            0x32 => self.ldd_hla(),
             0x33 => self.inc_sp(),
-            0x34 => self.inc_hlr(),
-            0x35 => self.dec_hlr(),
+            0x34 => self.inc_hl(),
+            0x35 => self.dec_hl(),
             0x36 => self.ld_hln(),
             0x37 => self.scf(),
             0x38 => self.jr_c(),
@@ -652,7 +768,7 @@ impl Emu {
             0xFB => self.ei(),
             0xFE => self.cp_an(),
             0xFF => self.rst(0x38),
-            _ => panic!("Unknown opcode: {:X}", op),
+            _ => panic!("Unknown opcode: {:X}, PC: {:04X}", op, self.pc),
         }
     }
 
@@ -1018,8 +1134,8 @@ impl Emu {
     }
 
     fn ld_ann(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
+        let higher: u8 = self.fetch();
         let addr = ((higher as u16) << 8) | lower as u16;
         self.a = self.mem[addr as usize];
         16
@@ -1036,9 +1152,9 @@ impl Emu {
     }
 
     fn ld_nna(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
-        let addr = ((higher as u16)<< 8) | lower as u16;
+        let higher: u8 = self.fetch();
+        let addr = ((higher as u16) << 8) | lower as u16;
         self.mem[addr as usize] = self.a;
         16
     }
@@ -1062,7 +1178,13 @@ impl Emu {
 
     fn ldi_ahl(&mut self) -> u16 {
         self.a = self.mem[self.hl() as usize];
-        self.inc_hl();
+        self.set_hl(self.hl().wrapping_add(1));
+        8
+    }
+
+    fn ldi_hla(&mut self) -> u16 {
+        self.mem[self.hl() as usize] = self.a;
+        self.set_hl(self.hl().wrapping_add(1));
         8
     }
 
@@ -1072,43 +1194,49 @@ impl Emu {
         8
     }
 
+    fn ldd_hla(&mut self) -> u16 {
+        self.mem[self.hl() as usize] = self.a;
+        self.set_hl(self.hl().wrapping_sub(1));
+        8
+    }
+
     // 16 BIT LOADS
     fn ld_bcnn(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
+        let higher: u8 = self.fetch();
         let val: u16 = (higher as u16) << 8 | lower as u16;
         self.set_bc(val);
         12
     }
 
     fn ld_denn(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
+        let higher: u8 = self.fetch();
         let val: u16 = (higher as u16) << 8 | lower as u16;
         self.set_de(val);
         12
     }
 
     fn ld_hlnn(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
+        let higher: u8 = self.fetch();
         let val: u16 = (higher as u16) << 8 | lower as u16;
         self.set_hl(val);
         12
     }
 
     fn ld_spnn(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
+        let higher: u8 = self.fetch();
         let val: u16 = (higher as u16) << 8 | lower as u16;
         self.sp = val;
         12
     }
 
     fn ld_nnsp(&mut self) -> u16 {
-        let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
-        let addr = ((higher as u16)<< 8) | lower as u16;
+        let higher: u8 = self.fetch();
+        let addr = ((higher as u16) << 8) | lower as u16;
         self.mem[addr as usize] = (self.sp & 0xFF) as u8;
         self.mem[(addr + 1) as usize] = (self.sp >> 8) as u8;
         20
@@ -1119,20 +1247,18 @@ impl Emu {
         8
     }
 
-    fn push(&mut self, n: u16) -> u16 {
-        let higher: u8 = (n >> 8) as u8;
-        let lower: u8 = n as u8;
-        self.sp -= 1;
-        self.mem[self.sp as usize] = higher;
-        self.sp -= 1;
-        self.mem[self.sp as usize] = lower;
+    fn push(&mut self, value: u16) -> u16 {
+        self.sp = self.sp.wrapping_sub(2);
+        self.mem[(self.sp + 1) as usize] = (value >> 8) as u8; // Push high byte
+        self.mem[self.sp as usize] = (value & 0xFF) as u8; // Push low byte
         16
     }
 
     fn pop_bc(&mut self) -> u16 {
         let lower: u8 = self.mem[self.sp as usize];
-        self.sp += 1;
+        self.sp = self.sp.wrapping_add(1);
         let higher: u8 = self.mem[self.sp as usize];
+        self.sp = self.sp.wrapping_add(1);
         let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_bc(val);
         12
@@ -1140,8 +1266,9 @@ impl Emu {
 
     fn pop_de(&mut self) -> u16 {
         let lower: u8 = self.mem[self.sp as usize];
-        self.sp += 1;
+        self.sp = self.sp.wrapping_add(1);
         let higher: u8 = self.mem[self.sp as usize];
+        self.sp = self.sp.wrapping_add(1);
         let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_de(val);
         12
@@ -1149,8 +1276,9 @@ impl Emu {
 
     fn pop_hl(&mut self) -> u16 {
         let lower: u8 = self.mem[self.sp as usize];
-        self.sp += 1;
+        self.sp = self.sp.wrapping_add(1);
         let higher: u8 = self.mem[self.sp as usize];
+        self.sp = self.sp.wrapping_add(1);
         let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_hl(val);
         12
@@ -1158,8 +1286,9 @@ impl Emu {
 
     fn pop_af(&mut self) -> u16 {
         let lower: u8 = self.mem[self.sp as usize];
-        self.sp += 1;
+        self.sp = self.sp.wrapping_add(1);
         let higher: u8 = self.mem[self.sp as usize];
+        self.sp = self.sp.wrapping_add(1);
         let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_af(val);
         12
@@ -1211,6 +1340,7 @@ impl Emu {
         let h: bool = ((self.a & 0xF) + (n & 0xF) + self.get_carry() as u8) > 0xF;
 
         let sum: u16 = self.a as u16 + n as u16 + self.get_carry() as u16;
+        self.a = sum as u8;
 
         self.set_zero(self.a == 0);
         self.set_sub(false);
@@ -2001,7 +2131,7 @@ impl Emu {
         self.a >>= 1;
         self.a |= (self.get_carry() as u8) << 7;
 
-        self.set_zero(self.a == 0);
+        self.set_zero(false);
         self.set_sub(false);
         self.set_half(false);
         self.set_carry(c);
@@ -2574,8 +2704,8 @@ impl Emu {
 
     // JUMP INSTRUCTIONS
     fn jp_nn(&mut self) -> u16 {
-        let higher = self.fetch();
         let lower = self.fetch();
+        let higher = self.fetch();
         let addr = (higher as u16) << 8 | lower as u16;
         self.pc = addr;
         16
@@ -2587,43 +2717,59 @@ impl Emu {
     }
 
     fn jp_nz(&mut self) -> u16 {
-        if !self.get_zero() {
+        let cycles = if !self.get_zero() {
             let higher = self.fetch();
             let lower = self.fetch();
             let addr = (higher as u16) << 8 | lower as u16;
             self.pc = addr;
-        }
-        16 / 12
+            16
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles
     }
 
     fn jp_z(&mut self) -> u16 {
-        if self.get_zero() {
+        let cycles = if self.get_zero() {
             let higher = self.fetch();
             let lower = self.fetch();
             let addr = (higher as u16) << 8 | lower as u16;
             self.pc = addr;
-        }
-        16 / 12
+            16
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles
     }
 
     fn jp_nc(&mut self) -> u16 {
-        if !self.get_carry() {
+        let cycles = if !self.get_carry() {
             let higher = self.fetch();
             let lower = self.fetch();
             let addr = (higher as u16) << 8 | lower as u16;
             self.pc = addr;
-        }
-        16 / 12
+            16
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles
     }
 
     fn jp_c(&mut self) -> u16 {
-        if self.get_carry() {
+        let cycles = if self.get_carry() {
             let higher = self.fetch();
             let lower = self.fetch();
             let addr = (higher as u16) << 8 | lower as u16;
             self.pc = addr;
-        }
-        16 / 12
+            16
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles
     }
 
     fn jr_dd(&mut self) -> u16 {
@@ -2633,40 +2779,68 @@ impl Emu {
     }
 
     fn jr_nz(&mut self) -> u16 {
-        if !self.get_zero() {
-            let n: i8 = self.fetch() as i8;
-            self.pc = ((n as i16).wrapping_add(self.pc as i16)) as u16;
-        }
-        12 / 8
+        let cycles = if !self.get_zero() {
+            let n: i8 = self.fetch() as i8; // Fetch the next byte and treat it as a signed value.
+
+            // Since `fetch` increments `pc`, we need to subtract 1 so the relative jump is correct.
+            self.pc = ((self.pc as i16).wrapping_add(n as i16)) as u16;
+
+            12 // If the jump is taken, the cycle count is typically different.
+        } else {
+            self.pc = self.pc.wrapping_add(1);
+            8 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles // Return the cycle count.
     }
 
     fn jr_z(&mut self) -> u16 {
-        if self.get_zero() {
-            let n: i8 = self.fetch() as i8;
-            self.pc = ((n as i16).wrapping_add(self.pc as i16)) as u16;
-        }
-        12 / 8
+        let cycles = if self.get_zero() {
+            let n: i8 = self.fetch() as i8; // Fetch the next byte and treat it as a signed value.
+
+            // Since `fetch` increments `pc`, we need to subtract 1 so the relative jump is correct.
+            self.pc = ((self.pc as i16).wrapping_add(n as i16)) as u16;
+
+            12 // If the jump is taken, the cycle count is typically different.
+        } else {
+            self.pc = self.pc.wrapping_add(1);
+            8 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles // Return the cycle count.
     }
 
     fn jr_nc(&mut self) -> u16 {
-        if !self.get_carry() {
-            let n: i8 = self.fetch() as i8;
-            self.pc = ((n as i16).wrapping_add(self.pc as i16)) as u16;
-        }
-        12 / 8
+        let cycles = if !self.get_carry() {
+            let n: i8 = self.fetch() as i8; // Fetch the next byte and treat it as a signed value.
+
+            // Since `fetch` increments `pc`, we need to subtract 1 so the relative jump is correct.
+            self.pc = ((self.pc as i16).wrapping_add(n as i16)) as u16;
+
+            12 // If the jump is taken, the cycle count is typically different.
+        } else {
+            self.pc = self.pc.wrapping_add(1);
+            8 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles // Return the cycle count.
     }
 
     fn jr_c(&mut self) -> u16 {
-        if !self.get_carry() {
-            let n: i8 = self.fetch() as i8;
-            self.pc = ((n as i16).wrapping_add(self.pc as i16)) as u16;
-        }
-        12 / 8
+        let cycles = if self.get_carry() {
+            let n: i8 = self.fetch() as i8; // Fetch the next byte and treat it as a signed value.
+
+            // Since `fetch` increments `pc`, we need to subtract 1 so the relative jump is correct.
+            self.pc = ((self.pc as i16).wrapping_add(n as i16)) as u16;
+
+            12 // If the jump is taken, the cycle count is typically different.
+        } else {
+            self.pc = self.pc.wrapping_add(1);
+            8 // If the jump is not taken, the cycle count is typically different.
+        };
+        cycles // Return the cycle count.
     }
 
     fn call_nn(&mut self) -> u16 {
-        let higher = self.fetch();
         let lower = self.fetch();
+        let higher = self.fetch();
         let addr = ((higher as u16) << 8) | lower as u16;
         self.sp -= 1;
         self.mem[self.sp as usize] = (self.pc >> 8) as u8;
@@ -2677,66 +2851,102 @@ impl Emu {
     }
 
     fn call_nz(&mut self) -> u16 {
-        if !self.get_zero() {
-            let higher = self.fetch();
+        let cycles = if !self.get_zero() {
             let lower = self.fetch();
+            let higher = self.fetch();
             let addr = ((higher as u16) << 8) | lower as u16;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc >> 8) as u8;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc) as u8;
-            self.pc = addr;
-        }
-        24 / 12
+
+            // Push the address of the next instruction onto the stack before the jump.
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = ((self.pc) >> 8) as u8; // Higher byte of PC
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = (self.pc) as u8; // Lower byte of PC
+
+            self.pc = addr; // Jump to the address
+
+            24 // Cycles if the call is taken
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // Cycles if the call is not taken
+        };
+
+        cycles // Return the cycle count
     }
 
     fn call_z(&mut self) -> u16 {
-        if self.get_zero() {
-            let higher = self.fetch();
+        let cycles = if self.get_zero() {
             let lower = self.fetch();
+            let higher = self.fetch();
             let addr = ((higher as u16) << 8) | lower as u16;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc >> 8) as u8;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc) as u8;
-            self.pc = addr;
-        }
-        24 / 12
+
+            // Push the address of the next instruction onto the stack before the jump.
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = ((self.pc) >> 8) as u8; // Higher byte of PC
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = (self.pc) as u8; // Lower byte of PC
+
+            self.pc = addr; // Jump to the address
+
+            24 // Cycles if the call is taken
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // Cycles if the call is not taken
+        };
+
+        cycles // Return the cycle count
     }
 
     fn call_nc(&mut self) -> u16 {
-        if !self.get_carry() {
-            let higher = self.fetch();
+        let cycles = if !self.get_carry() {
             let lower = self.fetch();
+            let higher = self.fetch();
             let addr = ((higher as u16) << 8) | lower as u16;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc >> 8) as u8;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc) as u8;
-            self.pc = addr;
-        }
-        24 / 12
+
+            // Push the address of the next instruction onto the stack before the jump.
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = ((self.pc) >> 8) as u8; // Higher byte of PC
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = (self.pc) as u8; // Lower byte of PC
+
+            self.pc = addr; // Jump to the address
+
+            24 // Cycles if the call is taken
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // Cycles if the call is not taken
+        };
+
+        cycles // Return the cycle count
     }
 
     fn call_c(&mut self) -> u16 {
-        if self.get_carry() {
-            let higher = self.fetch();
+        let cycles = if self.get_carry() {
             let lower = self.fetch();
+            let higher = self.fetch();
             let addr = ((higher as u16) << 8) | lower as u16;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc >> 8) as u8;
-            self.sp -= 1;
-            self.mem[self.sp as usize] = (self.pc) as u8;
-            self.pc = addr;
-        }
-        24 / 12
+
+            // Push the address of the next instruction onto the stack before the jump.
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = ((self.pc) >> 8) as u8; // Higher byte of PC
+            self.sp = self.sp.wrapping_sub(1);
+            self.mem[self.sp as usize] = (self.pc) as u8; // Lower byte of PC
+
+            self.pc = addr; // Jump to the address
+
+            24 // Cycles if the call is taken
+        } else {
+            self.pc = self.pc.wrapping_add(2);
+            12 // Cycles if the call is not taken
+        };
+
+        cycles // Return the cycle count
     }
 
     fn ret(&mut self) -> u16 {
         let lower = self.mem[self.sp as usize];
-        self.sp += 1;
+        self.sp = self.sp.wrapping_add(1);
         let higher = self.mem[self.sp as usize];
-        self.sp += 1;
+        self.sp = self.sp.wrapping_add(1);
         let addr = ((higher as u16) << 8) | lower as u16;
         self.pc = addr;
         16
@@ -2745,9 +2955,9 @@ impl Emu {
     fn ret_nz(&mut self) -> u16 {
         if !self.get_zero() {
             let lower = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let higher = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let addr = ((higher as u16) << 8) | lower as u16;
             self.pc = addr;
         }
@@ -2757,9 +2967,9 @@ impl Emu {
     fn ret_z(&mut self) -> u16 {
         if self.get_zero() {
             let lower = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let higher = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let addr = ((higher as u16) << 8) | lower as u16;
             self.pc = addr;
         }
@@ -2769,9 +2979,9 @@ impl Emu {
     fn ret_nc(&mut self) -> u16 {
         if !self.get_carry() {
             let lower = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let higher = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let addr = ((higher as u16) << 8) | lower as u16;
             self.pc = addr;
         }
@@ -2781,9 +2991,9 @@ impl Emu {
     fn ret_c(&mut self) -> u16 {
         if self.get_carry() {
             let lower = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let higher = self.mem[self.sp as usize];
-            self.sp += 1;
+            self.sp = self.sp.wrapping_add(1);
             let addr = ((higher as u16) << 8) | lower as u16;
             self.pc = addr;
         }
