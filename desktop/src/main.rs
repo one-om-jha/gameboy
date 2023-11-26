@@ -1,4 +1,4 @@
-use chip8_core::*;
+use gameboy::*;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -26,7 +26,7 @@ fn main() {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
     let window = video_subsystem
-        .window("CHIP-8 EMULATOR", WINDOW_WIDTH, WINDOW_HEIGHT)
+        .window("GAMEBOY EMULATOR", WINDOW_WIDTH, WINDOW_HEIGHT)
         .position_centered()
         .opengl()
         .build()
@@ -38,12 +38,12 @@ fn main() {
 
     let mut event_pump = sdl_context.event_pump().unwrap();
 
-    let mut chip8 = Emu::new();
+    let mut gb = Emu::new();
 
     let mut rom = File::open(&args[1]).expect("Unable to open file.");
     let mut buffer = Vec::new();
     rom.read_to_end(&mut buffer).unwrap();
-    chip8.load(&buffer);
+    gb.load(&buffer);
 
     'gameplay: loop {
         for evt in event_pump.poll_iter() {
@@ -59,14 +59,14 @@ fn main() {
                     keycode: Some(key), ..
                 } => {
                     if let Some(k) = key2btn(key) {
-                        chip8.keypress(k, true);
+                        gb.keypress(k, true);
                     }
                 }
                 Event::KeyUp {
                     keycode: Some(key), ..
                 } => {
                     if let Some(k) = key2btn(key) {
-                        chip8.keypress(k, false);
+                        gb.keypress(k, false);
                     }
                 }
                 _ => (),
@@ -74,10 +74,10 @@ fn main() {
         }
 
         for _ in 0..TICKS_PER_FRAME {
-            chip8.tick();
+            gb.tick();
         }
-        chip8.tick_timers();
-        draw_screen(&chip8, &mut canvas);
+        gb.tick_timers();
+        draw_screen(&gb, &mut canvas);
     }
 }
 
@@ -88,12 +88,22 @@ fn draw_screen(emu: &Emu, canvas: &mut Canvas<Window>) {
 
     let screen_buf = emu.get_display();
 
-    canvas.set_draw_color(Color::RGB(255, 255, 255));
-    for (i, pixel) in screen_buf.iter().enumerate() {
+    // canvas.set_draw_color(Color::RGB(255, 255, 255));
+    // for (i, pixel) in screen_buf.iter().enumerate() {
+    //     if *pixel {
+    //         let x = (i % SCREEN_WIDTH) as u32;
+    //         let y = (i / SCREEN_WIDTH) as u32;
+
+    //         let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
+    //         canvas.fill_rect(rect).unwrap();
+    //     }
+    // }
+    for (i, pixel) in screen_buf.iter().enumerate {
         if *pixel {
+            let (r,g,b) = pixel;
             let x = (i % SCREEN_WIDTH) as u32;
             let y = (i / SCREEN_WIDTH) as u32;
-
+            canvas.set_draw_color(Color::RGB(r,g,b));
             let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
             canvas.fill_rect(rect).unwrap();
         }
@@ -103,22 +113,14 @@ fn draw_screen(emu: &Emu, canvas: &mut Canvas<Window>) {
 
 fn key2btn(key: Keycode) -> Option<usize> {
     match key {
-        Keycode::Num1 => Some(0x1),
-        Keycode::Num2 => Some(0x2),
-        Keycode::Num3 => Some(0x3),
-        Keycode::Num4 => Some(0xC),
-        Keycode::Q => Some(0x4),
-        Keycode::W => Some(0x5),
-        Keycode::E => Some(0x6),
-        Keycode::R => Some(0xD),
-        Keycode::A => Some(0x7),
-        Keycode::S => Some(0x8),
-        Keycode::D => Some(0x9),
-        Keycode::F => Some(0xE),
-        Keycode::Z => Some(0xA),
-        Keycode::X => Some(0),
-        Keycode::C => Some(0xB),
-        Keycode::V => Some(0xF),
+        Keycode::W => Some(0),
+        Keycode::D => Some(1),
+        Keycode::S => Some(2),
+        Keycode::A => Some(3),
+        Keycode::J => Some(4),
+        Keycode::K => Some(5),
+        Keycode::I => Some(6),
+        Keycode::O => Some(7),
         _ => None,
     }
 }
