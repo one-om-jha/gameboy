@@ -1,10 +1,7 @@
-
-
 pub const SCREEN_WIDTH: usize = 160;
 pub const SCREEN_HEIGHT: usize = 144;
 
 const MEM_SIZE: usize = 65536;
-const NUM_KEYS: usize = 16;
 
 const START_ADDR: u16 = 0x0100;
 
@@ -13,11 +10,11 @@ const SUB_FLAG: u8 = 0b0100_0000;
 const HALF_FLAG: u8 = 0b0010_0000;
 const CARRY_FLAG: u8 = 0b0001_0000;
 
-enum ppu_state {
-    GPU_MODE_HBLANK = 0,
-    GPU_MODE_VBLANK = 1,
-    GPU_MODE_OAM = 2,
-    GPU_MODE_VRAM = 3,
+enum PpuState {
+    GpuModeHblank = 0,
+    GpuModeVblank = 1,
+    GpuModeOam = 2,
+    GpuModeVram = 3,
 }
 
 pub struct Emu {
@@ -35,7 +32,7 @@ pub struct Emu {
     l: u8,
     is_halted: bool,
     interrupts_enabled: bool,
-    gpu_state: ppu_state,
+    gpu_state: PpuState,
     cycles: u16,
     scanline: u8,
 }
@@ -57,7 +54,7 @@ impl Emu {
             l: 0,
             is_halted: false,
             interrupts_enabled: false,
-            gpu_state: ppu_state::GPU_MODE_HBLANK,
+            gpu_state: PpuState::GpuModeHblank,
             cycles: 0,
             scanline: 0,
         };
@@ -168,7 +165,7 @@ impl Emu {
         self.l = 0;
         self.interrupts_enabled = false;
         self.is_halted = false;
-        self.gpu_state = ppu_state::GPU_MODE_HBLANK;
+        self.gpu_state = PpuState::GpuModeHblank;
         self.cycles = 0;
         self.scanline = 0;
     }
@@ -207,7 +204,7 @@ impl Emu {
         self.cycles += cycles;
 
         match self.gpu_state {
-            ppu_state::GPU_MODE_HBLANK => {
+            PpuState::GpuModeHblank => {
                 if self.cycles >= 204 {
                     self.cycles += 1;
 
@@ -216,35 +213,35 @@ impl Emu {
                             self.mem[0xFF0F as usize] |= 0b0000_0001;
                         }
 
-                        self.gpu_state = ppu_state::GPU_MODE_VBLANK;
+                        self.gpu_state = PpuState::GpuModeVblank;
                     } else {
-                        self.gpu_state = ppu_state::GPU_MODE_OAM;
+                        self.gpu_state = PpuState::GpuModeOam;
                         self.cycles -= 204;
                     }
                 }
             }
-            ppu_state::GPU_MODE_VBLANK => {
+            PpuState::GpuModeVblank => {
                 if self.cycles >= 456 {
                     self.scanline += 1;
 
                     if self.scanline > 153 {
                         self.scanline = 0;
-                        self.gpu_state = ppu_state::GPU_MODE_OAM;
+                        self.gpu_state = PpuState::GpuModeOam;
                     }
 
                     self.cycles -= 456;
                 }
             }
-            ppu_state::GPU_MODE_OAM => {
+            PpuState::GpuModeOam => {
                 if self.cycles >= 80 {
-                    self.gpu_state = ppu_state::GPU_MODE_VRAM;
+                    self.gpu_state = PpuState::GpuModeVram;
 
                     self.cycles -= 80;
                 }
             }
-            ppu_state::GPU_MODE_VRAM => {
+            PpuState::GpuModeVram => {
                 if self.cycles >= 172 {
-                    self.gpu_state = ppu_state::GPU_MODE_HBLANK;
+                    self.gpu_state = PpuState::GpuModeHblank;
 
                     self.render_scanline();
 
@@ -918,7 +915,6 @@ impl Emu {
             0xFD => self.set_l(7),
             0xFE => self.set_bit_hl(7),
             0xFF => self.set_a(7),
-            _ => panic!("Unknown opcode: {:X}", op),
         }
     }
 
@@ -1006,16 +1002,6 @@ impl Emu {
         8
     }
 
-    fn ld_rhl(&mut self, r: &mut u8) -> u16 {
-        *r = self.mem[self.hl() as usize];
-        8
-    }
-
-    fn ld_hlr(&mut self, r: u8) -> u16 {
-        self.mem[self.hl() as usize] = r;
-        8
-    }
-
     fn ld_hln(&mut self) -> u16 {
         self.mem[self.hl() as usize] = self.fetch();
         12
@@ -1069,31 +1055,14 @@ impl Emu {
         12
     }
 
-    fn ld_aff00c(&mut self) -> u16 {
-        self.a = self.mem[0xFF00 + self.c as usize];
-        8
-    }
-
     fn ld_ff00ca(&mut self) -> u16 {
         self.mem[0xFF00 + self.c as usize] = self.a;
-        8
-    }
-
-    fn ldi_hla(&mut self) -> u16 {
-        self.mem[self.hl() as usize] = self.a;
-        self.inc_hl();
         8
     }
 
     fn ldi_ahl(&mut self) -> u16 {
         self.a = self.mem[self.hl() as usize];
         self.inc_hl();
-        8
-    }
-
-    fn ldd_hla(&mut self) -> u16 {
-        self.mem[self.hl() as usize] = self.a;
-        self.dec_hl();
         8
     }
 
@@ -1225,20 +1194,6 @@ impl Emu {
         8
     }
 
-    fn add_ahl(&mut self) -> u16 {
-        let val = self.mem[self.hl() as usize];
-        let h: bool = ((self.a & 0xF) + (val & 0xF)) > 0xF;
-
-        let sum: u16 = self.a as u16 + val as u16;
-        self.a = sum as u8;
-
-        self.set_zero(self.a == 0);
-        self.set_sub(false);
-        self.set_half(h);
-        self.set_carry(sum > 0xFF);
-        8
-    }
-
     fn adc_ar(&mut self, r: u8) -> u16 {
         let h: bool = ((self.a & 0xF) + (r & 0xF) + self.get_carry() as u8) > 0xF;
 
@@ -1256,20 +1211,6 @@ impl Emu {
         let h: bool = ((self.a & 0xF) + (n & 0xF) + self.get_carry() as u8) > 0xF;
 
         let sum: u16 = self.a as u16 + n as u16 + self.get_carry() as u16;
-
-        self.set_zero(self.a == 0);
-        self.set_sub(false);
-        self.set_half(h);
-        self.set_carry(sum > 0xFF);
-        8
-    }
-
-    fn adc_ahl(&mut self) -> u16 {
-        let val: u8 = self.mem[self.hl() as usize];
-        let h: bool = ((self.a & 0xF) + (val & 0xF)) > 0xF;
-
-        let sum: u16 = self.a as u16 + val as u16 + self.get_carry() as u16;
-        self.a = sum as u8;
 
         self.set_zero(self.a == 0);
         self.set_sub(false);
@@ -1297,20 +1238,6 @@ impl Emu {
         let c: bool = n > self.a;
 
         self.a = self.a.wrapping_sub(n);
-
-        self.set_zero(self.a == 0);
-        self.set_sub(true);
-        self.set_half(h);
-        self.set_carry(c);
-        8
-    }
-
-    fn sub_ahl(&mut self) -> u16 {
-        let val = self.mem[self.hl() as usize];
-        let h = (val & 0xF) > (self.a & 0xF);
-        let c: bool = val > self.a;
-
-        self.a = self.a.wrapping_sub(val);
 
         self.set_zero(self.a == 0);
         self.set_sub(true);
@@ -1352,23 +1279,6 @@ impl Emu {
         8
     }
 
-    fn sbc_ahl(&mut self) -> u16 {
-        let n = self.mem[self.hl() as usize];
-        let carry = self.get_carry() as u8;
-        let sub = n.wrapping_add(carry);
-
-        let h = (self.a & 0xF) < (sub & 0xF);
-        let c = (self.a as u16) < (sub as u16);
-
-        self.a = self.a.wrapping_sub(sub);
-
-        self.set_zero(self.a == 0);
-        self.set_sub(true);
-        self.set_half(h);
-        self.set_carry(c);
-        8
-    }
-
     fn and_ar(&mut self, r: u8) -> u16 {
         self.a &= r;
 
@@ -1382,17 +1292,6 @@ impl Emu {
     fn and_an(&mut self) -> u16 {
         let n = self.fetch();
         self.a &= n;
-
-        self.set_zero(self.a == 0);
-        self.set_sub(false);
-        self.set_half(true);
-        self.set_carry(false);
-        8
-    }
-
-    fn and_ahl(&mut self) -> u16 {
-        let val = self.mem[self.hl() as usize];
-        self.a &= val;
 
         self.set_zero(self.a == 0);
         self.set_sub(false);
@@ -1422,17 +1321,6 @@ impl Emu {
         8
     }
 
-    fn xor_ahl(&mut self) -> u16 {
-        let val = self.mem[self.hl() as usize];
-        self.a ^= val;
-
-        self.set_zero(self.a == 0);
-        self.set_sub(false);
-        self.set_half(false);
-        self.set_carry(false);
-        8
-    }
-
     fn or_ar(&mut self, r: u8) -> u16 {
         self.a |= r;
 
@@ -1446,17 +1334,6 @@ impl Emu {
     fn or_an(&mut self) -> u16 {
         let n = self.fetch();
         self.a |= n;
-
-        self.set_zero(self.a == 0);
-        self.set_sub(false);
-        self.set_half(false);
-        self.set_carry(false);
-        8
-    }
-
-    fn or_ahl(&mut self) -> u16 {
-        let val = self.mem[self.hl() as usize];
-        self.a |= val;
 
         self.set_zero(self.a == 0);
         self.set_sub(false);
@@ -1482,18 +1359,6 @@ impl Emu {
         let c: bool = n > self.a;
 
         self.set_zero(self.a == n);
-        self.set_sub(true);
-        self.set_half(h);
-        self.set_carry(c);
-        8
-    }
-
-    fn cp_ahl(&mut self) -> u16 {
-        let val = self.mem[self.hl() as usize];
-        let h: bool = (val & 0xF) > (self.a & 0xF);
-        let c: bool = val > self.a;
-
-        self.set_zero(self.a == val);
         self.set_sub(true);
         self.set_half(h);
         self.set_carry(c);
