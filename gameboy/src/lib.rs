@@ -1,4 +1,4 @@
-use rand::random;
+
 
 pub const SCREEN_WIDTH: usize = 160;
 pub const SCREEN_HEIGHT: usize = 144;
@@ -42,7 +42,7 @@ pub struct Emu {
 
 impl Emu {
     pub fn new() -> Self {
-        let mut new_emu = Self {
+        let new_emu = Self {
             mem: [0; MEM_SIZE],
             screen: [(0, 0, 0); SCREEN_WIDTH * SCREEN_HEIGHT],
             sp: 0xFFFE,
@@ -266,10 +266,10 @@ impl Emu {
             0x8800
         };
 
-        let mut map_offset =
+        let map_offset =
             bg_map_offset + ((self.scanline as u16 + self.scrolly() as u16) / 8) * 32;
 
-        let mut line_offset = self.scrollx() as u16 / 8;
+        let line_offset = self.scrollx() as u16 / 8;
 
         let y = (self.scanline + self.scrolly()) & 7;
 
@@ -313,16 +313,16 @@ impl Emu {
             let sprite_x = self.mem[sprite_addr + 1] as i16 - 8;
             let sprite_tile_index = self.mem[sprite_addr + 2];
             let sprite_flags = self.mem[sprite_addr + 3];
-            let xFlip = sprite_flags & (1 << 5) != 0;
-            let yFlip = sprite_flags & (1 << 6) != 0;
+            let x_flip = sprite_flags & (1 << 5) != 0;
+            let y_flip = sprite_flags & (1 << 6) != 0;
 
             let height = match tall_mode {
                 true => 16,
                 false => 8,
             };
             for sprite_line in 0..height {
-                let tile_line = match yFlip {
-                    true => (height - 1 - sprite_line),
+                let tile_line = match y_flip {
+                    true => height - 1 - sprite_line,
                     false => sprite_line,
                 };
                 let tile_index = if tall_mode && sprite_line >= 8 {
@@ -336,8 +336,8 @@ impl Emu {
                 let tile_data_higher = self.mem[sprite_tile_addr as usize];
 
                 for sprite_pixel in 0..8 {
-                    let tile_pixel = match xFlip {
-                        true => (7 - sprite_pixel),
+                    let tile_pixel = match x_flip {
+                        true => 7 - sprite_pixel,
                         false => sprite_pixel,
                     };
                     let higher = tile_data_higher & (1 << (7 - tile_pixel)) != 0;
@@ -1034,7 +1034,7 @@ impl Emu {
     fn ld_ann(&mut self) -> u16 {
         let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
-        let addr = (higher << 8) | lower;
+        let addr = ((higher as u16) << 8) | lower as u16;
         self.a = self.mem[addr as usize];
         16
     }
@@ -1052,7 +1052,7 @@ impl Emu {
     fn ld_nna(&mut self) -> u16 {
         let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
-        let addr = (higher << 8) | lower;
+        let addr = ((higher as u16)<< 8) | lower as u16;
         self.mem[addr as usize] = self.a;
         16
     }
@@ -1139,7 +1139,7 @@ impl Emu {
     fn ld_nnsp(&mut self) -> u16 {
         let higher: u8 = self.fetch();
         let lower: u8 = self.fetch();
-        let addr = (higher << 8) | lower;
+        let addr = ((higher as u16)<< 8) | lower as u16;
         self.mem[addr as usize] = (self.sp & 0xFF) as u8;
         self.mem[(addr + 1) as usize] = (self.sp >> 8) as u8;
         20
@@ -1164,7 +1164,7 @@ impl Emu {
         let lower: u8 = self.mem[self.sp as usize];
         self.sp += 1;
         let higher: u8 = self.mem[self.sp as usize];
-        let val: u16 = (higher << 8) as u16 | lower as u16;
+        let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_bc(val);
         12
     }
@@ -1173,7 +1173,7 @@ impl Emu {
         let lower: u8 = self.mem[self.sp as usize];
         self.sp += 1;
         let higher: u8 = self.mem[self.sp as usize];
-        let val: u16 = (higher << 8) as u16 | lower as u16;
+        let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_de(val);
         12
     }
@@ -1182,7 +1182,7 @@ impl Emu {
         let lower: u8 = self.mem[self.sp as usize];
         self.sp += 1;
         let higher: u8 = self.mem[self.sp as usize];
-        let val: u16 = (higher << 8) as u16 | lower as u16;
+        let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_hl(val);
         12
     }
@@ -1191,7 +1191,7 @@ impl Emu {
         let lower: u8 = self.mem[self.sp as usize];
         self.sp += 1;
         let higher: u8 = self.mem[self.sp as usize];
-        let val: u16 = (higher << 8) as u16 | lower as u16;
+        let val: u16 = ((higher as u16) << 8) | lower as u16;
         self.set_af(val);
         12
     }
@@ -1682,11 +1682,11 @@ impl Emu {
         let mut correction = 0u8;
 
         if !self.get_sub() {
-            if (self.get_carry() || self.a > 0x99) {
+            if self.get_carry() || self.a > 0x99 {
                 correction += 0x60;
                 self.set_carry(true);
             }
-            if (self.get_half() || (self.a & 0xF) > 0x09) {
+            if self.get_half() || (self.a & 0xF) > 0x09 {
                 correction += 0x06;
             }
         } else {
@@ -1772,56 +1772,56 @@ impl Emu {
 
     fn inc_bc(&mut self) -> u16 {
         let val = self.bc();
-        let (new_val, c) = val.overflowing_add(1);
+        let (new_val, _c) = val.overflowing_add(1);
         self.set_bc(new_val);
         8
     }
 
     fn inc_de(&mut self) -> u16 {
         let val = self.de();
-        let (new_val, c) = val.overflowing_add(1);
+        let (new_val, _c) = val.overflowing_add(1);
         self.set_de(new_val);
         8
     }
 
     fn inc_hlr(&mut self) -> u16 {
         let val = self.hl();
-        let (new_val, c) = val.overflowing_add(1);
+        let (new_val, _c) = val.overflowing_add(1);
         self.set_hl(new_val);
         8
     }
 
     fn inc_sp(&mut self) -> u16 {
         let val = self.sp;
-        let (new_val, c) = val.overflowing_add(1);
+        let (new_val, _c) = val.overflowing_add(1);
         self.sp = new_val;
         8
     }
 
     fn dec_bc(&mut self) -> u16 {
         let val = self.bc();
-        let (new_val, c) = val.overflowing_sub(1);
+        let (new_val, _c) = val.overflowing_sub(1);
         self.set_bc(new_val);
         8
     }
 
     fn dec_de(&mut self) -> u16 {
         let val = self.de();
-        let (new_val, c) = val.overflowing_sub(1);
+        let (new_val, _c) = val.overflowing_sub(1);
         self.set_de(new_val);
         8
     }
 
     fn dec_hlr(&mut self) -> u16 {
         let val = self.hl();
-        let (new_val, c) = val.overflowing_sub(1);
+        let (new_val, _c) = val.overflowing_sub(1);
         self.set_hl(new_val);
         8
     }
 
     fn dec_sp(&mut self) -> u16 {
         let val = self.sp;
-        let (new_val, c) = val.overflowing_sub(1);
+        let (new_val, _c) = val.overflowing_sub(1);
         self.sp = new_val;
         8
     }
@@ -2588,42 +2588,42 @@ impl Emu {
     }
 
     fn set_b(&mut self, n: u8) -> u16 {
-        self.b |= (1 << n);
+        self.b |= 1 << n;
         8
     }
 
     fn set_c(&mut self, n: u8) -> u16 {
-        self.c |= (1 << n);
+        self.c |= 1 << n;
         8
     }
 
     fn set_d(&mut self, n: u8) -> u16 {
-        self.d |= (1 << n);
+        self.d |= 1 << n;
         8
     }
 
     fn set_e(&mut self, n: u8) -> u16 {
-        self.e |= (1 << n);
+        self.e |= 1 << n;
         8
     }
 
     fn set_h(&mut self, n: u8) -> u16 {
-        self.h |= (1 << n);
+        self.h |= 1 << n;
         8
     }
 
     fn set_l(&mut self, n: u8) -> u16 {
-        self.l |= (1 << n);
+        self.l |= 1 << n;
         8
     }
 
     fn set_bit_hl(&mut self, n: u8) -> u16 {
-        self.mem[self.hl() as usize] |= (1 << n);
+        self.mem[self.hl() as usize] |= 1 << n;
         16
     }
 
     fn set_a(&mut self, n: u8) -> u16 {
-        self.a |= (1 << n);
+        self.a |= 1 << n;
         8
     }
 

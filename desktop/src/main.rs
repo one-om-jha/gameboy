@@ -98,15 +98,13 @@ fn draw_screen(emu: &Emu, canvas: &mut Canvas<Window>) {
     //         canvas.fill_rect(rect).unwrap();
     //     }
     // }
-    for (i, pixel) in screen_buf.iter().enumerate {
-        if *pixel {
-            let (r,g,b) = pixel;
-            let x = (i % SCREEN_WIDTH) as u32;
-            let y = (i / SCREEN_WIDTH) as u32;
-            canvas.set_draw_color(Color::RGB(r,g,b));
-            let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
-            canvas.fill_rect(rect).unwrap();
-        }
+    for (i, pixel) in screen_buf.iter().enumerate() {
+        let (r,g,b) = *pixel;
+        let x = (i % SCREEN_WIDTH) as u32;
+        let y = (i / SCREEN_WIDTH) as u32;
+        canvas.set_draw_color(Color::RGB(r,g,b));
+        let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
+        canvas.fill_rect(rect).unwrap();
     }
     canvas.present();
 }

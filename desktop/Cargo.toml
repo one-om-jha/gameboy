@@ -6,5 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chip8_core = { path = "../chip8_core" }
+gameboy = { path = "../gameboy" }
 sdl2 = "^0.34.3"
